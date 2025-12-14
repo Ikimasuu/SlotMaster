@@ -81,11 +81,14 @@ updateOptions   DB '[1] Change status',13,10
                 DB '[2] Change plate number',13,10
                 DB '[3] Cancel',13,10,13,10
                 DB 'Enter choice: $'
+updateOptionsFree DB '[1] Change status',13,10
+                 DB '[2] Cancel',13,10,13,10
+                 DB 'Enter choice: $'
 updateOkMsg     DB 'Record updated successfully.',13,10
                 DB 'Press any key to continue...',0
 
 deleteConfirm   DB 'Delete this record? (Y/N): $'
-deleteOkMsg     DB 'Record deleted (soft delete).',13,10
+deleteOkMsg     DB 'Record deleted.',13,10
                 DB 'Press any key to continue...',0
 notFoundMsg     DB 'Record not found or already deleted.',13,10
                 DB 'Press any key to continue...',0
@@ -859,7 +862,8 @@ ViewSlots PROC
     jmp VSDone
 VSLoopCheck:
     cmp si,cx
-    jae VSAfterLoop
+    jb VSLoop
+    jmp VSAfterLoop
 VSLoop:
     mov bx,si
     mov di,OFFSET slotStatus
@@ -892,6 +896,9 @@ VSLoop:
     ; plate
     mov di,OFFSET slotPlateLens
     add di,bx
+    mov al,[slotStatus+bx]
+    cmp al,STATUS_OCCUPIED
+    jne VSDash
     mov al,[di]
     cmp al,0
     je VSDash
@@ -931,7 +938,8 @@ VSFinishLine:
 VSSkip:
     inc si
     cmp si,cx
-    jb VSLoop
+    jae VSAfterLoop
+    jmp VSLoop
 VSAfterLoop:
     cmp byte ptr viewHasRecord,0
     jne VSHasRecords
@@ -1008,6 +1016,9 @@ USRecOk:
 
     mov dx,OFFSET plateLabel
     call PrintDollarString
+    mov al,[slotStatus+bx]
+    cmp al,STATUS_OCCUPIED
+    jne USShowDash
     mov dl,[slotPlateLens+bx]
     cmp dl,0
     je USShowDash
@@ -1035,8 +1046,15 @@ USShowDash:
 USAfterPlateShow:
     call PrintNewLine
     call PrintNewLine
-
+    
+    mov dl,[slotStatus+bx]
+    cmp dl,STATUS_OCCUPIED
+    je USOptsOcc
+    mov dx,OFFSET updateOptionsFree
+    jmp USOptsPrint
+USOptsOcc:
     mov dx,OFFSET updateOptions
+USOptsPrint:
     call PrintDollarString
     mov ah,01h
     int 21h
@@ -1044,10 +1062,17 @@ USAfterPlateShow:
     cmp al,'1'
     je USChangeStatus
     cmp al,'2'
-    je USChangePlate
+    je USChoice2
     cmp al,'3'
     jne USBadMenu
     jmp USDone
+USChoice2:
+    mov dl,[slotStatus+bx]
+    cmp dl,STATUS_OCCUPIED
+    je USChoice2Plate
+    jmp USDone
+USChoice2Plate:
+    jmp USChangePlate
 USBadMenu:
     mov dx,OFFSET invalidInputMsg
     call ShowMsgAndPause
@@ -1232,6 +1257,7 @@ DSAfterPlateShow:
     call PrintDollarString
     mov ah,01h
     int 21h
+    call PrintNewLine
     mov ah,al
     call ToUpper
     cmp al,'Y'
@@ -1301,6 +1327,7 @@ MMDelete:
     call DeleteSlot
     jmp MainLoop
 MMLogout:
+    call PrintNewLine
     mov dx,OFFSET logoutMsg
     call PrintDollarString
     call WaitForKey
