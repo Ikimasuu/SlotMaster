@@ -19,6 +19,14 @@ STATUS_FREE         EQU 0
 STATUS_OCCUPIED     EQU 1
 STATUS_DELETED      EQU 2
 
+; -------------------- UI Theme --------------------
+; Text mode attribute: (background << 4) | foreground
+UI_ATTR_NORMAL      EQU 1Fh    ; bright white on blue
+UI_ATTR_TITLE       EQU 1Eh    ; yellow on blue
+UI_ATTR_BORDER      EQU 1Bh    ; bright cyan on blue
+UI_ATTR_PROMPT      EQU 1Ah    ; bright green on blue
+UI_ATTR_ERROR       EQU 1Ch    ; bright red on blue
+
 ; -------------------- Text Resources --------------------
 openingScreenText   DB 'SlotMaster Parking Slot Management System',13,10
                 DB 'Programmer: KHARL PATRICK R. CEDENO',13,10
@@ -107,6 +115,32 @@ statusOccStr        DB 'OCCUPIED$'
 crlfStr         DB 13,10,'$'
 spaceBar        DB ' $'
 pipeSep         DB ' | $'
+
+; -------------------- UI Text Resources (Main Screens) --------------------
+uiIndentCol     DB 0
+
+uiOpenTitle     DB 'SLOTMASTER$'
+uiOpenSubtitle  DB 'Parking Slot Management System$'
+uiOpenByLine    DB 'Programmer: KHARL PATRICK R. CEDENO$'
+uiOpenDateLine  DB 'Date: 12/14/2025$'
+uiOpenContinue  DB 'Press any key to continue...$'
+
+uiAuthHeader    DB 'AUTHENTICATION$'
+uiAuthOpt1      DB '[1] Login$'
+uiAuthOpt2      DB '[2] Register$'
+uiAuthOpt3      DB '[3] Exit$'
+uiAuthPrompt    DB 'Select an option (1-3): $'
+
+uiMainHeader    DB 'MAIN MENU$'
+uiMainOpt1      DB '[1] Create New Parking Slot Record$'
+uiMainOpt2      DB '[2] View All Records$'
+uiMainOpt3      DB '[3] Update Slot Record$'
+uiMainOpt4      DB '[4] Delete Slot Record$'
+uiMainOpt5      DB '[5] Logout$'
+uiMainOpt6      DB '[6] Exit Program$'
+uiMainPrompt    DB 'Select an option (1-6): $'
+
+uiInvalidChoice DB 'Invalid choice. Press any key...$'
 
 ; -------------------- Input Buffers --------------------
 usernameInput   DB MAX_USERNAME_LEN,0,MAX_USERNAME_LEN DUP(0)
@@ -199,6 +233,245 @@ ClearScreen PROC
     int 10h
     ret
 ClearScreen ENDP
+
+; -------------------- BIOS UI Routines --------------------
+; These helpers use BIOS INT 10h so we can control color + layout.
+
+SetCursorPos PROC          ; DH=row, DL=col
+    push ax
+    push bx
+    mov ah,02h
+    mov bh,0
+    int 10h
+    pop bx
+    pop ax
+    ret
+SetCursorPos ENDP
+
+ClearScreenAttr PROC       ; BL=attribute (bg<<4 | fg)
+    push ax
+    push bx
+    push cx
+    push dx
+    mov ax,0600h
+    mov bh,bl
+    mov cx,0000h
+    mov dx,184Fh
+    int 10h
+    mov ah,02h
+    mov bh,0
+    mov dh,0
+    mov dl,0
+    int 10h
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+ClearScreenAttr ENDP
+
+WriteCharAttr PROC         ; AL=char, BL=attribute
+    push ax
+    push bx
+    push cx
+    mov ah,09h
+    mov bh,0
+    mov cx,1
+    int 10h
+    pop cx
+    pop bx
+    pop ax
+    ret
+WriteCharAttr ENDP
+
+WriteCharAttrN PROC        ; AL=char, BL=attribute, CX=count
+    push ax
+    push bx
+    push cx
+    mov ah,09h
+    mov bh,0
+    int 10h
+    pop cx
+    pop bx
+    pop ax
+    ret
+WriteCharAttrN ENDP
+
+StrLenDollar PROC          ; DS:SI -> '$' string, returns CX length (ignores CR/LF)
+    push ax
+    push si
+    xor cx,cx
+SLD_Loop:
+    lodsb
+    cmp al,'$'
+    je SLD_Done
+    cmp al,0Dh
+    je SLD_Loop
+    cmp al,0Ah
+    je SLD_Loop
+    inc cx
+    jmp SLD_Loop
+SLD_Done:
+    pop si
+    pop ax
+    ret
+StrLenDollar ENDP
+
+PrintAtDollarStringAttr PROC ; DS:SI -> '$' string, DH=row, DL=col, BL=attribute
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push bp
+    push es
+
+    mov [uiIndentCol],dl
+
+    ; ensure ES = DS for BIOS "write string" call
+    push ds
+    pop es
+
+    mov bp,si              ; BP = start of current line segment
+    xor cx,cx              ; CX = length of current segment
+
+PAD_Scan:
+    lodsb
+    cmp al,'$'
+    je PAD_FlushAndDone
+    cmp al,0Dh
+    je PAD_CR
+    cmp al,0Ah
+    je PAD_LF
+    inc cx
+    jmp PAD_Scan
+
+PAD_CR:
+    call PAD_FlushSegment
+    mov dl,[uiIndentCol]
+    call SetCursorPos
+    mov bp,si
+    xor cx,cx
+    jmp PAD_Scan
+
+PAD_LF:
+    call PAD_FlushSegment
+    inc dh
+    mov dl,[uiIndentCol]
+    call SetCursorPos
+    mov bp,si
+    xor cx,cx
+    jmp PAD_Scan
+
+PAD_FlushAndDone:
+    call PAD_FlushSegment
+    pop es
+    pop bp
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+; Print ES:BP segment length CX at DH:DL using attribute in BL.
+PAD_FlushSegment:
+    or cx,cx
+    jz PAD_FlushRet
+    push ax
+    push bx
+    push cx
+    push dx
+    mov ax,1301h           ; AH=13h write string, AL=01h update cursor
+    mov bh,0
+    int 10h
+    add dl,cl              ; keep DL in sync for same-line segments
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+PAD_FlushRet:
+    ret
+PrintAtDollarStringAttr ENDP
+
+PrintCenteredDollarStringAttr PROC ; DS:SI -> '$' string, DH=row, BL=attribute
+    push ax
+    push cx
+    push dx
+    call StrLenDollar
+    mov ax,76               ; inner width (cols 2..77)
+    sub ax,cx
+    shr ax,1
+    add ax,2                ; inner left
+    mov dl,al
+    call PrintAtDollarStringAttr
+    pop dx
+    pop cx
+    pop ax
+    ret
+PrintCenteredDollarStringAttr ENDP
+
+DrawMainFrame PROC         ; BL=attribute
+    push ax
+    push bx
+    push cx
+    push dx
+
+    ; Top border (row 1, col 1..78)
+    mov dh,1
+    mov dl,1
+    call SetCursorPos
+    mov al,201              ; ╔
+    call WriteCharAttr
+    mov dl,2
+    call SetCursorPos
+    mov al,205              ; ═
+    mov cx,76
+    call WriteCharAttrN
+    mov dl,78
+    call SetCursorPos
+    mov al,187              ; ╗
+    call WriteCharAttr
+
+    ; Sides (rows 2..22)
+    mov dh,2
+DMF_SideLoop:
+    cmp dh,23
+    je DMF_Bottom
+    mov dl,1
+    call SetCursorPos
+    mov al,186              ; ║
+    call WriteCharAttr
+    mov dl,78
+    call SetCursorPos
+    mov al,186              ; ║
+    call WriteCharAttr
+    inc dh
+    jmp DMF_SideLoop
+
+DMF_Bottom:
+    ; Bottom border (row 23, col 1..78)
+    mov dh,23
+    mov dl,1
+    call SetCursorPos
+    mov al,200              ; ╚
+    call WriteCharAttr
+    mov dl,2
+    call SetCursorPos
+    mov al,205              ; ═
+    mov cx,76
+    call WriteCharAttrN
+    mov dl,78
+    call SetCursorPos
+    mov al,188              ; ╝
+    call WriteCharAttr
+
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+DrawMainFrame ENDP
 
 ReadLine PROC             ; DX = buffer
     push ax
@@ -491,9 +764,34 @@ PrintStatusText ENDP
 
 ; -------------------- Screen + Auth --------------------
 OpeningScreen PROC
-    call ClearScreen
-    mov dx,OFFSET openingScreenText
-    call PrintDollarString
+    mov bl,UI_ATTR_NORMAL
+    call ClearScreenAttr
+    mov bl,UI_ATTR_BORDER
+    call DrawMainFrame
+
+    mov bl,UI_ATTR_TITLE
+    mov dh,4
+    mov si,OFFSET uiOpenTitle
+    call PrintCenteredDollarStringAttr
+
+    mov bl,UI_ATTR_NORMAL
+    mov dh,6
+    mov si,OFFSET uiOpenSubtitle
+    call PrintCenteredDollarStringAttr
+
+    mov dh,9
+    mov si,OFFSET uiOpenByLine
+    call PrintCenteredDollarStringAttr
+
+    mov dh,10
+    mov si,OFFSET uiOpenDateLine
+    call PrintCenteredDollarStringAttr
+
+    mov bl,UI_ATTR_PROMPT
+    mov dh,20
+    mov si,OFFSET uiOpenContinue
+    call PrintCenteredDollarStringAttr
+
     call WaitForKey
     ret
 OpeningScreen ENDP
@@ -670,17 +968,55 @@ LoginUser ENDP
 ; Authentication menu: AL=1 login success, AL=0 exit
 AuthMenu PROC
 AuthLoop:
-    call ClearScreen
-    mov dx,OFFSET authMenuHeader
-    call PrintDollarString
-    mov ah,01h
+    mov bl,UI_ATTR_NORMAL
+    call ClearScreenAttr
+    mov bl,UI_ATTR_BORDER
+    call DrawMainFrame
+
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiAuthHeader
+    call PrintCenteredDollarStringAttr
+
+    mov bl,UI_ATTR_NORMAL
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET uiAuthOpt1
+    call PrintAtDollarStringAttr
+    mov dh,8
+    mov dl,6
+    mov si,OFFSET uiAuthOpt2
+    call PrintAtDollarStringAttr
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET uiAuthOpt3
+    call PrintAtDollarStringAttr
+
+    mov bl,UI_ATTR_PROMPT
+    mov dh,12
+    mov dl,6
+    mov si,OFFSET uiAuthPrompt
+    call PrintAtDollarStringAttr
+
+    call FlushKeyboard
+    mov ah,08h
     int 21h
+    mov bl,UI_ATTR_PROMPT
+    call WriteCharAttr
     cmp al,'1'
     je AuthDoLogin
     cmp al,'2'
     je AuthDoRegister
     cmp al,'3'
     je AuthExit
+
+    mov bl,UI_ATTR_ERROR
+    mov dh,21
+    mov dl,6
+    mov si,OFFSET uiInvalidChoice
+    call PrintAtDollarStringAttr
+    call FlushKeyboard
+    call WaitForKey
     jmp AuthLoop
 AuthDoLogin:
     call FlushKeyboard   ; <<< REQUIRED
@@ -1294,11 +1630,53 @@ DeleteSlot ENDP
 ; Main menu loop. Returns on logout; exits program on choice 6.
 MainMenu PROC
 MainLoop:
-    call ClearScreen
-    mov dx,OFFSET mainMenuHeader
-    call PrintDollarString
-    mov ah,01h
+    mov bl,UI_ATTR_NORMAL
+    call ClearScreenAttr
+    mov bl,UI_ATTR_BORDER
+    call DrawMainFrame
+
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiMainHeader
+    call PrintCenteredDollarStringAttr
+
+    mov bl,UI_ATTR_NORMAL
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET uiMainOpt1
+    call PrintAtDollarStringAttr
+    mov dh,8
+    mov dl,6
+    mov si,OFFSET uiMainOpt2
+    call PrintAtDollarStringAttr
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET uiMainOpt3
+    call PrintAtDollarStringAttr
+    mov dh,10
+    mov dl,6
+    mov si,OFFSET uiMainOpt4
+    call PrintAtDollarStringAttr
+    mov dh,11
+    mov dl,6
+    mov si,OFFSET uiMainOpt5
+    call PrintAtDollarStringAttr
+    mov dh,12
+    mov dl,6
+    mov si,OFFSET uiMainOpt6
+    call PrintAtDollarStringAttr
+
+    mov bl,UI_ATTR_PROMPT
+    mov dh,15
+    mov dl,6
+    mov si,OFFSET uiMainPrompt
+    call PrintAtDollarStringAttr
+
+    call FlushKeyboard
+    mov ah,08h
     int 21h
+    mov bl,UI_ATTR_PROMPT
+    call WriteCharAttr
     cmp al,'1'
     je MMCreate
     cmp al,'2'
@@ -1311,8 +1689,14 @@ MainLoop:
     je MMLogout
     cmp al,'6'
     je MMExit
-    mov dx,OFFSET invalidInputMsg
-    call ShowMsgAndPause
+
+    mov bl,UI_ATTR_ERROR
+    mov dh,21
+    mov dl,6
+    mov si,OFFSET uiInvalidChoice
+    call PrintAtDollarStringAttr
+    call FlushKeyboard
+    call WaitForKey
     jmp MainLoop
 MMCreate:
     call CreateSlot
@@ -1327,9 +1711,12 @@ MMDelete:
     call DeleteSlot
     jmp MainLoop
 MMLogout:
-    call PrintNewLine
-    mov dx,OFFSET logoutMsg
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,21
+    mov dl,6
+    mov si,OFFSET logoutMsg
+    call PrintAtDollarStringAttr
+    call FlushKeyboard
     call WaitForKey
     mov al,0
     ret
