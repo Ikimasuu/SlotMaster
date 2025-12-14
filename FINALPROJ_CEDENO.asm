@@ -129,6 +129,8 @@ slotStatus      DB MAX_SLOTS DUP(0)
 slotPlateLens   DB MAX_SLOTS DUP(0)
 slotPlates      DB MAX_SLOTS*MAX_PLATE_LEN DUP(0)
 
+viewHasRecord   DB 0
+
 .CODE
 ; -------------------- Utility Routines --------------------
 PrintDollarString PROC    ; DS:DX -> '$'-terminated string
@@ -753,7 +755,6 @@ CSSetFree:
     mov byte ptr [plateBuffer+1],0
     jmp CSSave
 CSSetOcc:
-    mov ah,STATUS_OCCUPIED
     mov dx,OFFSET platePrompt
     call PrintDollarString
     mov dx,OFFSET plateBuffer
@@ -764,6 +765,7 @@ CSSetOcc:
     jne CSPlateOk
     jmp CSInvalid
 CSPlateOk:
+    mov ah,STATUS_OCCUPIED
 
 CSSave:
     mov bl,slotCount
@@ -846,7 +848,7 @@ ViewSlots PROC
     mov dx,OFFSET tableHeader
     call PrintDollarString
 
-    mov dh,0                  ; tracks if any record printed
+    mov byte ptr viewHasRecord,0 ; tracks if any record printed
     mov cl,slotCount
     mov ch,0
     mov si,0                  ; SI used as index
@@ -866,7 +868,7 @@ VSLoop:
     cmp al,STATUS_DELETED
     je VSSkip
 
-    inc dh
+    mov byte ptr viewHasRecord,1
     ; slot id
     mov ax,si
     shl ax,1
@@ -895,13 +897,15 @@ VSLoop:
     je VSDash
     mov di,OFFSET slotPlates
     mov ax,si
-    mov dx,bx                ; save index
+    push bx
     mov bx,MAX_PLATE_LEN
     mul bx
-    mov bx,dx                ; restore index
+    pop bx
     add di,ax
+    push cx                  ; preserve slotCount in CX
     mov cl,[slotPlateLens+bx]
     mov ch,0
+    push si                  ; preserve loop index
     mov si,di
     push bx
     push di
@@ -916,6 +920,8 @@ VSPlatePrint:
 VSAfterPlate:
     pop di
     pop bx
+    pop si
+    pop cx
     jmp VSFinishLine
 VSDash:
     mov dx,OFFSET dashMsg
@@ -927,7 +933,7 @@ VSSkip:
     cmp si,cx
     jb VSLoop
 VSAfterLoop:
-    cmp dh,0
+    cmp byte ptr viewHasRecord,0
     jne VSHasRecords
     mov dx,OFFSET noSlotsMsg
     call ShowMsgAndPause
@@ -971,9 +977,9 @@ USIdOk:
 
     ; locate record
     call FindSlotById
-    jc USNoDup
+    jnc USFound
     jmp USNotFound
-USNoDup:
+USFound:
     mov bh,0                 ; ensure BX is word index
     mov di,OFFSET slotStatus
     add di,bx
@@ -1034,6 +1040,7 @@ USAfterPlateShow:
     call PrintDollarString
     mov ah,01h
     int 21h
+    call PrintNewLine
     cmp al,'1'
     je USChangeStatus
     cmp al,'2'
@@ -1164,9 +1171,9 @@ DSStart:
 DSIdOk:
 
     call FindSlotById
-    jc DSNoDup
+    jnc DSFound
     jmp DSNotFound
-DSNoDup:
+DSFound:
     mov bh,0                 ; BX = index
     mov al,[slotStatus+bx]
     cmp al,STATUS_DELETED
