@@ -12,7 +12,7 @@
 MAX_USERS           EQU 5
 MAX_USERNAME_LEN    EQU 16
 MAX_PASSWORD_LEN    EQU 16
-MAX_SLOTS           EQU 20
+MAX_SLOTS           EQU 10
 MAX_PLATE_LEN       EQU 12
 
 STATUS_FREE         EQU 0
@@ -75,7 +75,7 @@ slotExistsMsg   DB 'Duplicate slot ID. Creation rejected.',13,10
                 DB 'Press any key to continue...',0
 slotCreateOk    DB 'Slot created successfully.',13,10
                 DB 'Press any key to continue...',0
-slotFullMsg     DB 'Storage full. Cannot create more slots.',13,10
+slotFullMsg     DB 'Storage full (max 10 slots). Cannot create more slots.',13,10
                 DB 'Press any key to continue...',0
 invalidInputMsg DB 'Invalid input. Please try again.',13,10
                 DB 'Press any key to continue...',0
@@ -142,6 +142,25 @@ uiMainPrompt    DB 'Select an option (1-6): $'
 
 uiInvalidChoice DB 'Invalid choice. Press any key...$'
 
+uiLoginTitle    DB 'LOGIN$'
+uiRegisterTitle DB 'REGISTER$'
+uiCreateTitle   DB 'CREATE SLOT$'
+uiViewTitle     DB 'VIEW PARKING SLOTS$'
+uiUpdateTitle   DB 'UPDATE SLOT$'
+uiDeleteTitle   DB 'DELETE SLOT$'
+uiExitTitle     DB 'GOODBYE$'
+
+uiViewNextPage  DB 'More records available. Press any key for next page...$'
+uiViewReturn    DB 'Press any key to return to menu...$'
+
+uiUpdateOpt1        DB '[1] Change status$'
+uiUpdateOpt2        DB '[2] Change plate number$'
+uiUpdateOpt3        DB '[3] Cancel$'
+uiUpdateOpt2Cancel  DB '[2] Cancel$'
+uiUpdatePrompt      DB 'Select an option: $'
+
+uiDeleteCancelled   DB 'Delete cancelled. Press any key...$'
+
 ; -------------------- Input Buffers --------------------
 usernameInput   DB MAX_USERNAME_LEN,0,MAX_USERNAME_LEN DUP(0)
 passwordInput   DB MAX_PASSWORD_LEN,0,MAX_PASSWORD_LEN DUP(0)
@@ -151,6 +170,8 @@ plateBuffer     DB MAX_PLATE_LEN,0,MAX_PLATE_LEN DUP(0)
 menuBuffer      DB 2,0,2 DUP(0)
 
 digitBuffer     DB 6 DUP(0)                ; for PrintNumber
+slotIdTemp      DW 0                      ; holds parsed slot id during creation
+slotStatusTemp  DB 0                      ; holds parsed status during creation
 
 ; -------------------- User Storage --------------------
 userCount       DB 0
@@ -171,31 +192,37 @@ viewHasRecord   DB 0
 .CODE
 ; -------------------- Utility Routines --------------------
 PrintDollarString PROC    ; DS:DX -> '$'-terminated string
-    mov ah,09h
-    int 21h
+    push ax
+    push bx
+    push dx
+    push si
+
+    mov si,dx
+    call GetCursorPos
+    mov bl,UI_ATTR_NORMAL
+    call PrintAtDollarStringAttr
+
+    pop si
+    pop dx
+    pop bx
+    pop ax
     ret
 PrintDollarString ENDP
 
 PrintZeroString PROC      ; DS:DX -> zero-terminated string
     push ax
-    push dx
     push bx
-    push cx
+    push dx
     push si
+
     mov si,dx
-PrintZeroLoop:
-    lodsb
-    cmp al,0
-    je PrintZeroDone
-    mov dl,al
-    mov ah,02h
-    int 21h
-    jmp PrintZeroLoop
-PrintZeroDone:
+    call GetCursorPos
+    mov bl,UI_ATTR_NORMAL
+    call PrintAtZeroStringAttr
+
     pop si
-    pop cx
-    pop bx
     pop dx
+    pop bx
     pop ax
     ret
 PrintZeroString ENDP
@@ -203,12 +230,14 @@ PrintZeroString ENDP
 PrintNewLine PROC
     push ax
     push dx
-    mov dl,0Dh
-    mov ah,02h
-    int 21h
-    mov dl,0Ah
-    mov ah,02h
-    int 21h
+    call GetCursorPos
+    inc dh
+    cmp dh,24
+    jbe PNL_Set
+    mov dh,24
+PNL_Set:
+    mov dl,0
+    call SetCursorPos
     pop dx
     pop ax
     ret
@@ -240,19 +269,51 @@ ClearScreen ENDP
 SetCursorPos PROC          ; DH=row, DL=col
     push ax
     push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
     mov ah,02h
     mov bh,0
     int 10h
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
     pop bx
     pop ax
     ret
 SetCursorPos ENDP
+
+GetCursorPos PROC          ; returns DH=row, DL=col
+    push ax
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    mov ah,03h
+    mov bh,0
+    int 10h
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    ret
+GetCursorPos ENDP
 
 ClearScreenAttr PROC       ; BL=attribute (bg<<4 | fg)
     push ax
     push bx
     push cx
     push dx
+    push si
+    push di
+    push bp
     mov ax,0600h
     mov bh,bl
     mov cx,0000h
@@ -263,6 +324,9 @@ ClearScreenAttr PROC       ; BL=attribute (bg<<4 | fg)
     mov dh,0
     mov dl,0
     int 10h
+    pop bp
+    pop di
+    pop si
     pop dx
     pop cx
     pop bx
@@ -274,10 +338,18 @@ WriteCharAttr PROC         ; AL=char, BL=attribute
     push ax
     push bx
     push cx
+    push dx
+    push si
+    push di
+    push bp
     mov ah,09h
     mov bh,0
     mov cx,1
     int 10h
+    pop bp
+    pop di
+    pop si
+    pop dx
     pop cx
     pop bx
     pop ax
@@ -288,14 +360,53 @@ WriteCharAttrN PROC        ; AL=char, BL=attribute, CX=count
     push ax
     push bx
     push cx
+    push dx
+    push si
+    push di
+    push bp
     mov ah,09h
     mov bh,0
     int 10h
+    pop bp
+    pop di
+    pop si
+    pop dx
     pop cx
     pop bx
     pop ax
     ret
 WriteCharAttrN ENDP
+
+WriteBufAttrAtCursor PROC  ; DS:SI -> buffer, CX=length, BL=attribute
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
+    push es
+
+    call GetCursorPos
+
+    push ds
+    pop es
+    mov bp,si
+
+    mov ax,1301h           ; AH=13h write string, AL=01h update cursor
+    mov bh,0
+    int 10h
+
+    pop es
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+WriteBufAttrAtCursor ENDP
 
 StrLenDollar PROC          ; DS:SI -> '$' string, returns CX length (ignores CR/LF)
     push ax
@@ -323,6 +434,7 @@ PrintAtDollarStringAttr PROC ; DS:SI -> '$' string, DH=row, DL=col, BL=attribute
     push cx
     push dx
     push si
+    push di
     push bp
     push es
 
@@ -367,6 +479,7 @@ PAD_FlushAndDone:
     call PAD_FlushSegment
     pop es
     pop bp
+    pop di
     pop si
     pop dx
     pop cx
@@ -385,7 +498,6 @@ PAD_FlushSegment:
     mov ax,1301h           ; AH=13h write string, AL=01h update cursor
     mov bh,0
     int 10h
-    add dl,cl              ; keep DL in sync for same-line segments
     pop dx
     pop cx
     pop bx
@@ -393,6 +505,83 @@ PAD_FlushSegment:
 PAD_FlushRet:
     ret
 PrintAtDollarStringAttr ENDP
+
+PrintAtZeroStringAttr PROC ; DS:SI -> zero-terminated string, DH=row, DL=col, BL=attribute
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push bp
+    push es
+
+    mov [uiIndentCol],dl
+    call SetCursorPos
+
+    push ds
+    pop es
+
+    mov bp,si              ; BP = start of current line segment
+    xor cx,cx              ; CX = length of current segment
+
+PAZ_Scan:
+    lodsb
+    cmp al,0
+    je PAZ_FlushAndDone
+    cmp al,0Dh
+    je PAZ_CR
+    cmp al,0Ah
+    je PAZ_LF
+    inc cx
+    jmp PAZ_Scan
+
+PAZ_CR:
+    call PAZ_FlushSegment
+    mov dl,[uiIndentCol]
+    call SetCursorPos
+    mov bp,si
+    xor cx,cx
+    jmp PAZ_Scan
+
+PAZ_LF:
+    call PAZ_FlushSegment
+    inc dh
+    mov dl,[uiIndentCol]
+    call SetCursorPos
+    mov bp,si
+    xor cx,cx
+    jmp PAZ_Scan
+
+PAZ_FlushAndDone:
+    call PAZ_FlushSegment
+    pop es
+    pop bp
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+PAZ_FlushSegment:
+    or cx,cx
+    jz PAZ_FlushRet
+    push ax
+    push bx
+    push cx
+    push dx
+    mov ax,1301h
+    mov bh,0
+    int 10h
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+PAZ_FlushRet:
+    ret
+PrintAtZeroStringAttr ENDP
 
 PrintCenteredDollarStringAttr PROC ; DS:SI -> '$' string, DH=row, BL=attribute
     push ax
@@ -472,6 +661,16 @@ DMF_Bottom:
     pop ax
     ret
 DrawMainFrame ENDP
+
+UiPrepareScreen PROC
+    push bx
+    mov bl,UI_ATTR_NORMAL
+    call ClearScreenAttr
+    mov bl,UI_ATTR_BORDER
+    call DrawMainFrame
+    pop bx
+    ret
+UiPrepareScreen ENDP
 
 ReadLine PROC             ; DX = buffer
     push ax
@@ -557,10 +756,9 @@ PrintNumber PROC
     mov cx,0
     cmp ax,0
     jne PNLoop
-    mov dl,'0'
-    mov ah,02h
-    int 21h
-    jmp PNDone
+    mov byte ptr [si],'0'
+    mov cx,1
+    jmp PNPrintBuf
 PNLoop:
     xor dx,dx
     div bx              ; AX = AX/10, DX = remainder
@@ -571,14 +769,9 @@ PNLoop:
     cmp ax,0
     jne PNLoop
     inc si              ; move to first digit
-PNPrint:
-    cmp cx,0
-    je PNDone
-    mov dl,[si]
-    mov ah,02h
-    int 21h
-    inc si
-    loop PNPrint
+PNPrintBuf:
+    mov bl,UI_ATTR_NORMAL
+    call WriteBufAttrAtCursor
 PNDone:
     pop si
     pop dx
@@ -806,15 +999,20 @@ RegisterUser PROC
     jb RegStart
     jmp RegFull
 RegStart:
-    call ClearScreen
-    mov dx,OFFSET registerHeader
-    call PrintDollarString
-    call PrintNewLine
-    mov dx,OFFSET loginUserPrompt
-    call PrintDollarString
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiRegisterTitle
+    call PrintCenteredDollarStringAttr
+
+    call FlushKeyboard
+    mov bl,UI_ATTR_PROMPT
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET loginUserPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET usernameInput
     call ReadLine
-    call PrintNewLine
     mov al,[usernameInput+1]
     cmp al,0
     jne RegUserOk1
@@ -828,12 +1026,13 @@ RegUserOk1:
     jne RegUserNotDup
     jmp RegExists
 RegUserNotDup:
-
-    mov dx,OFFSET loginPassPrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET loginPassPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET passwordInput
     call ReadLine
-    call PrintNewLine
     mov al,[passwordInput+1]
     cmp al,0
     jne RegPassOk
@@ -868,19 +1067,36 @@ RegPassOk:
     call CopyBufferToDest
 
     inc userCount
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET registerOkMsg
     call ShowMsgAndPause
     jmp RegExit
 
 RegInvalid:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET invalidInputMsg
     call ShowMsgAndPause
     jmp RegStart
 RegExists:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET userExistsMsg
     call ShowMsgAndPause
     jmp RegStart
 RegFull:
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiRegisterTitle
+    call PrintCenteredDollarStringAttr
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET userLimitMsg
     call ShowMsgAndPause
 RegExit:
@@ -900,31 +1116,44 @@ LoginUser PROC
     push di
     cmp userCount,0
     jne LoginStart
-    call PrintNewLine            ; move off menu input line when no users exist
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiLoginTitle
+    call PrintCenteredDollarStringAttr
+    mov dh,8
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET noUsersMsg
     call ShowMsgAndPause
     mov al,0
     jmp LoginExit
 LoginStart:
-    call ClearScreen
-    mov dx,OFFSET loginHeader
-    call PrintDollarString
-    call PrintNewLine
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiLoginTitle
+    call PrintCenteredDollarStringAttr
 
-    mov dx,OFFSET loginUserPrompt
-    call PrintDollarString
+    call FlushKeyboard
+    mov bl,UI_ATTR_PROMPT
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET loginUserPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET usernameInput
     call ReadLine
-    call PrintNewLine
     mov al,[usernameInput+1]
     cmp al,0
     je LoginFail
 
-    mov dx,OFFSET loginPassPrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET loginPassPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET passwordInput
     call ReadLine
-    call PrintNewLine
     mov al,[passwordInput+1]
     cmp al,0
     je LoginFail
@@ -952,6 +1181,9 @@ LoginStart:
     jmp LoginExit
 
 LoginFail:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET loginFailMsg
     call ShowMsgAndPause
     mov al,0
@@ -1048,15 +1280,20 @@ CreateSlot PROC
     jb CSStart
     jmp CSFull
 CSStart:
-    call ClearScreen
-    mov dx,OFFSET createHeader
-    call PrintDollarString
-    call PrintNewLine
-    mov dx,OFFSET slotIdPrompt
-    call PrintDollarString
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiCreateTitle
+    call PrintCenteredDollarStringAttr
+
+    call FlushKeyboard
+    mov bl,UI_ATTR_PROMPT
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET slotIdPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET slotIdBuffer
     call ReadLine
-    call PrintNewLine
     mov dx,OFFSET slotIdBuffer
     call ParseNumber
     jnc CSIdOk
@@ -1068,14 +1305,15 @@ CSIdOk:
     jc CSNoDup
     jmp CSDuplicate
 CSNoDup:
+    mov slotIdTemp,ax        ; preserve slot id safely
 
-    mov si,ax                ; preserve slot id in SI
-
-    mov dx,OFFSET statusPrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET statusPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET statusBuffer
     call ReadLine
-    call PrintNewLine
     mov al,[statusBuffer+1]
     cmp al,0
     jne CSStatusOk
@@ -1091,20 +1329,24 @@ CSStatusOk:
 
 CSSetFree:
     mov ah,STATUS_FREE
+    mov slotStatusTemp,ah
     mov byte ptr [plateBuffer+1],0
     jmp CSSave
 CSSetOcc:
-    mov dx,OFFSET platePrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,11
+    mov dl,6
+    mov si,OFFSET platePrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET plateBuffer
     call ReadLine
-    call PrintNewLine
     mov al,[plateBuffer+1]
     cmp al,0
     jne CSPlateOk
     jmp CSInvalid
 CSPlateOk:
     mov ah,STATUS_OCCUPIED
+    mov slotStatusTemp,ah
 
 CSSave:
     mov bl,slotCount
@@ -1115,17 +1357,20 @@ CSSave:
     mov dx,bx
     shl dx,1
     add di,dx
-    mov [di],si
+    mov ax,slotIdTemp
+    mov [di],ax
 
-    ; save status (AH holds status)
+    ; save status (cached in slotStatusTemp)
     mov di,OFFSET slotStatus
     add di,bx
-    mov [di],ah
+    mov al,slotStatusTemp
+    mov [di],al
 
     ; save plate length
     mov di,OFFSET slotPlateLens
     add di,bx
-    cmp ah,STATUS_OCCUPIED
+    mov al,slotStatusTemp
+    cmp al,STATUS_OCCUPIED
     jne CSSetEmptyPlate
     mov al,[plateBuffer+1]
     mov [di],al
@@ -1148,19 +1393,36 @@ CSSetEmptyPlate:
     mov byte ptr [di],0
 CSPlateDone:
     inc slotCount
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET slotCreateOk
     call ShowMsgAndPause
     jmp CSDone
 
 CSDuplicate:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET slotExistsMsg
     call ShowMsgAndPause
     jmp CSStart
 CSInvalid:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET invalidInputMsg
     call ShowMsgAndPause
     jmp CSStart
 CSFull:
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiCreateTitle
+    call PrintCenteredDollarStringAttr
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET slotFullMsg
     call ShowMsgAndPause
 CSDone:
@@ -1180,112 +1442,168 @@ ViewSlots PROC
     push dx
     push si
     push di
-    call ClearScreen
-    mov dx,OFFSET viewHeader
-    call PrintDollarString
-    call PrintNewLine
-    mov dx,OFFSET tableHeader
-    call PrintDollarString
+    push bp
+    mov byte ptr viewHasRecord,0
+    mov di,0                  ; DI = slot index (persists across pages)
 
-    mov byte ptr viewHasRecord,0 ; tracks if any record printed
-    mov cl,slotCount
-    mov ch,0
-    mov si,0                  ; SI used as index
-    cmp cx,0
-    jne VSLoopCheck
-    mov dx,OFFSET noSlotsMsg
-    call ShowMsgAndPause
-    jmp VSDone
-VSLoopCheck:
-    cmp si,cx
-    jb VSLoop
-    jmp VSAfterLoop
+VSPageStart:
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiViewTitle
+    call PrintCenteredDollarStringAttr
+
+    mov bl,UI_ATTR_TITLE
+    mov dh,5
+    mov dl,6
+    mov si,OFFSET tableHeader
+    call PrintAtDollarStringAttr
+
+    mov cx,MAX_SLOTS           ; scan full capacity so no record is missed
+
+VSPrintPage:
+    xor bp,bp                 ; BP = records printed on this page
+
 VSLoop:
-    mov bx,si
-    mov di,OFFSET slotStatus
-    add di,bx
-    mov al,[di]
-    cmp al,STATUS_DELETED
-    je VSSkip
+    cmp di,cx
+    jb VSLoopBody
+    jmp VSAfterPage
 
-    mov byte ptr viewHasRecord,1
-    ; slot id
-    mov ax,si
+VSLoopBody:
+    ; load slot id for this index
+    mov ax,di
     shl ax,1
-    mov di,OFFSET slotIds
-    add di,ax
-    mov ax,[di]
+    mov si,OFFSET slotIds
+    add si,ax
+    mov ax,[si]
+    cmp ax,0
+    jne VSCheckStatus
+    jmp VSNextIndex           ; empty slot
+
+VSCheckStatus:
+    push ax                   ; preserve slot id without clobbering DH
+    mov bx,di
+    mov al,[slotStatus+bx]
+    cmp al,STATUS_DELETED
+    jne VSRecordActive
+    pop ax
+    jmp VSNextIndex
+
+VSRecordActive:
+    pop ax                    ; restore slot id for printing
+    mov byte ptr viewHasRecord,1
+
+    push ax                   ; save slot id while computing row
+    mov ax,bp                 ; AX = records printed on this page
+    add al,7                  ; row = 7 + BP
+    mov dh,al
+    pop ax                    ; restore slot id
+    mov dl,6
+    call SetCursorPos
+
+    ; slot id
     call PrintNumber
 
     mov dx,OFFSET pipeSep
     call PrintDollarString
 
-    ; status text
-    mov di,OFFSET slotStatus
-    add di,bx
-    mov al,[di]
+    ; status
+    mov al,[slotStatus+bx]
     call PrintStatusText
 
     mov dx,OFFSET pipeSep
     call PrintDollarString
 
     ; plate
-    mov di,OFFSET slotPlateLens
-    add di,bx
     mov al,[slotStatus+bx]
     cmp al,STATUS_OCCUPIED
     jne VSDash
-    mov al,[di]
+    mov al,[slotPlateLens+bx]
     cmp al,0
     je VSDash
-    mov di,OFFSET slotPlates
-    mov ax,si
-    push bx
-    mov bx,MAX_PLATE_LEN
-    mul bx
-    pop bx
-    add di,ax
-    push cx                  ; preserve slotCount in CX
+
+    push dx                    ; keep DH/DL (cursor row/col) intact
+    mov ax,di
+    mov si,MAX_PLATE_LEN
+    mul si
+    mov si,OFFSET slotPlates
+    add si,ax
+    push cx
     mov cl,[slotPlateLens+bx]
     mov ch,0
-    push si                  ; preserve loop index
-    mov si,di
-    push bx
-    push di
-VSPlatePrint:
-    cmp cx,0
-    je VSAfterPlate
-    mov dl,[si]
-    mov ah,02h
-    int 21h
-    inc si
-    loop VSPlatePrint
-VSAfterPlate:
-    pop di
-    pop bx
-    pop si
+    mov bl,UI_ATTR_NORMAL
+    call WriteBufAttrAtCursor
     pop cx
-    jmp VSFinishLine
+    pop dx                     ; restore cursor row in DH
+    jmp VSAfterPlate
+
 VSDash:
     mov dx,OFFSET dashMsg
     call PrintZeroString
-VSFinishLine:
-    call PrintNewLine
-VSSkip:
-    inc si
-    cmp si,cx
-    jae VSAfterLoop
+VSAfterPlate:
+
+    inc bp
+    inc di
+    cmp bp,14
+    jae VSAfterPage
     jmp VSLoop
-VSAfterLoop:
+
+VSNextIndex:
+    inc di
+    jmp VSLoop
+
+VSAfterPage:
     cmp byte ptr viewHasRecord,0
-    jne VSHasRecords
+    jne VSCheckMore
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET noSlotsMsg
     call ShowMsgAndPause
     jmp VSDone
-VSHasRecords:
-    mov dx,OFFSET continueMsg
-    call ShowMsgAndPause
+
+VSCheckMore:
+    ; Scan remaining indices for any active record
+    mov bx,di
+VSScanMore:
+    cmp bx,MAX_SLOTS
+    jae VSNoMore
+    mov ax,bx
+    shl ax,1
+    mov si,OFFSET slotIds
+    add si,ax
+    mov ax,[si]
+    cmp ax,0
+    jne VSScanStatus
+    jmp VSScanNext
+VSScanStatus:
+    mov al,[slotStatus+bx]
+    cmp al,STATUS_DELETED
+    jne VSHasMore
+VSScanNext:
+    inc bx
+    jmp VSScanMore
+
+VSHasMore:
+    mov bl,UI_ATTR_PROMPT
+    mov dh,21
+    mov dl,6
+    mov si,OFFSET uiViewNextPage
+    call PrintAtDollarStringAttr
+    call FlushKeyboard
+    call WaitForKey
+    jmp VSPageStart
+
+VSNoMore:
+    mov bl,UI_ATTR_PROMPT
+    mov dh,21
+    mov dl,6
+    mov si,OFFSET uiViewReturn
+    call PrintAtDollarStringAttr
+    call FlushKeyboard
+    call WaitForKey
 VSDone:
+    pop bp
     pop di
     pop si
     pop dx
@@ -1302,124 +1620,161 @@ UpdateSlot PROC
     push dx
     push si
     push di
+    push bp
 USStart:
-    call ClearScreen
-    mov dx,OFFSET updateHeader
-    call PrintDollarString
-    call PrintNewLine
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiUpdateTitle
+    call PrintCenteredDollarStringAttr
 
-    mov dx,OFFSET slotIdPrompt
-    call PrintDollarString
+    call FlushKeyboard
+    mov bl,UI_ATTR_PROMPT
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET slotIdPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET slotIdBuffer
     call ReadLine
-    call PrintNewLine
     mov dx,OFFSET slotIdBuffer
     call ParseNumber
     jnc USIdOk
     jmp USInvalid
 USIdOk:
-
-    ; locate record
     call FindSlotById
     jnc USFound
     jmp USNotFound
 USFound:
-    mov bh,0                 ; ensure BX is word index
-    mov di,OFFSET slotStatus
-    add di,bx
-    mov al,[di]
+    xor bh,bh
+    mov di,bx
+    mov al,[slotStatus+di]
     cmp al,STATUS_DELETED
     jne USRecOk
     jmp USNotFound
 USRecOk:
-
-    ; display current values
-    mov dx,OFFSET slotIdLabel
-    call PrintDollarString
-    mov ax,bx
+    ; Slot ID
+    mov bl,UI_ATTR_NORMAL
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET slotIdLabel
+    call PrintAtDollarStringAttr
+    mov ax,di
     shl ax,1
-    mov di,OFFSET slotIds
-    add di,ax
-    mov ax,[di]
+    mov si,OFFSET slotIds
+    add si,ax
+    mov ax,[si]
     call PrintNumber
-    call PrintNewLine
 
-    mov dx,OFFSET statusLabel
-    call PrintDollarString
-    mov al,[slotStatus+bx]
+    ; Status
+    mov bl,UI_ATTR_NORMAL
+    mov dh,10
+    mov dl,6
+    mov si,OFFSET statusLabel
+    call PrintAtDollarStringAttr
+    mov al,[slotStatus+di]
     call PrintStatusText
-    call PrintNewLine
 
-    mov dx,OFFSET plateLabel
-    call PrintDollarString
-    mov al,[slotStatus+bx]
+    ; Plate
+    mov bl,UI_ATTR_NORMAL
+    mov dh,11
+    mov dl,6
+    mov si,OFFSET plateLabel
+    call PrintAtDollarStringAttr
+    mov al,[slotStatus+di]
     cmp al,STATUS_OCCUPIED
     jne USShowDash
-    mov dl,[slotPlateLens+bx]
-    cmp dl,0
+    mov al,[slotPlateLens+di]
+    cmp al,0
     je USShowDash
-    mov ax,bx
+    mov ax,di
     mov si,MAX_PLATE_LEN
     mul si
-    mov di,OFFSET slotPlates
-    add di,ax
-    mov cl,[slotPlateLens+bx]
+    mov si,OFFSET slotPlates
+    add si,ax
+    push cx
+    mov cl,[slotPlateLens+di]
     mov ch,0
-    mov si,di
-USPlatePrint:
-    cmp cx,0
-    je USPlateDone
-    mov dl,[si]
-    mov ah,02h
-    int 21h
-    inc si
-    loop USPlatePrint
-USPlateDone:
+    mov bl,UI_ATTR_NORMAL
+    call WriteBufAttrAtCursor
+    pop cx
     jmp USAfterPlateShow
 USShowDash:
     mov dx,OFFSET dashMsg
     call PrintZeroString
 USAfterPlateShow:
-    call PrintNewLine
-    call PrintNewLine
-    
-    mov dl,[slotStatus+bx]
-    cmp dl,STATUS_OCCUPIED
-    je USOptsOcc
-    mov dx,OFFSET updateOptionsFree
-    jmp USOptsPrint
-USOptsOcc:
-    mov dx,OFFSET updateOptions
-USOptsPrint:
-    call PrintDollarString
-    mov ah,01h
+
+    ; Options
+    mov bl,UI_ATTR_NORMAL
+    mov dh,14
+    mov dl,6
+    mov si,OFFSET uiUpdateOpt1
+    call PrintAtDollarStringAttr
+    mov al,[slotStatus+di]
+    cmp al,STATUS_OCCUPIED
+    jne USOptsFree
+    mov dh,15
+    mov dl,6
+    mov si,OFFSET uiUpdateOpt2
+    call PrintAtDollarStringAttr
+    mov dh,16
+    mov dl,6
+    mov si,OFFSET uiUpdateOpt3
+    call PrintAtDollarStringAttr
+    jmp USOptsPrompt
+USOptsFree:
+    mov dh,15
+    mov dl,6
+    mov si,OFFSET uiUpdateOpt2Cancel
+    call PrintAtDollarStringAttr
+USOptsPrompt:
+    mov bl,UI_ATTR_PROMPT
+    mov dh,18
+    mov dl,6
+    mov si,OFFSET uiUpdatePrompt
+    call PrintAtDollarStringAttr
+
+    call FlushKeyboard
+    mov ah,08h
     int 21h
-    call PrintNewLine
+    mov [digitBuffer],al
+    mov si,OFFSET digitBuffer
+    mov cx,1
+    mov bl,UI_ATTR_PROMPT
+    call WriteBufAttrAtCursor
+
     cmp al,'1'
     je USChangeStatus
     cmp al,'2'
     je USChoice2
     cmp al,'3'
-    jne USBadMenu
-    jmp USDone
+    je USCancel
+    jmp USBadMenu
+
 USChoice2:
-    mov dl,[slotStatus+bx]
-    cmp dl,STATUS_OCCUPIED
-    je USChoice2Plate
-    jmp USDone
-USChoice2Plate:
+    mov al,[slotStatus+di]
+    cmp al,STATUS_OCCUPIED
+    jne USCancel
     jmp USChangePlate
+
+USCancel:
+    jmp USDone
+
 USBadMenu:
+    mov dh,19
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET invalidInputMsg
     call ShowMsgAndPause
     jmp USStart
 
 USChangeStatus:
-    mov dx,OFFSET statusPrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,20
+    mov dl,6
+    mov si,OFFSET statusPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET statusBuffer
     call ReadLine
-    call PrintNewLine
     mov al,[statusBuffer+1]
     cmp al,0
     jne USStatusOk
@@ -1438,66 +1793,75 @@ USSetFree:
 USSetOcc:
     mov al,STATUS_OCCUPIED
 USApplyStatus:
-    mov di,OFFSET slotStatus
-    add di,bx
-    mov [di],al
+    mov [slotStatus+di],al
     cmp al,STATUS_OCCUPIED
     jne USClearPlate
-    mov dx,OFFSET platePrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,21
+    mov dl,6
+    mov si,OFFSET platePrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET plateBuffer
     call ReadLine
-    call PrintNewLine
     mov al,[plateBuffer+1]
     cmp al,0
     je USInvalid
     jmp USCopyPlate
 USClearPlate:
-    mov di,OFFSET slotPlateLens
-    add di,bx
-    mov byte ptr [di],0
-    mov ax,bx
+    mov byte ptr [slotPlateLens+di],0
+    mov ax,di
     mov si,MAX_PLATE_LEN
     mul si
-    mov di,OFFSET slotPlates
-    add di,ax
-    mov byte ptr [di],0
+    mov si,OFFSET slotPlates
+    add si,ax
+    mov byte ptr [si],0
     jmp USUpdateDone
 
 USChangePlate:
-    mov dx,OFFSET platePrompt
-    call PrintDollarString
+    mov bl,UI_ATTR_PROMPT
+    mov dh,20
+    mov dl,6
+    mov si,OFFSET platePrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET plateBuffer
     call ReadLine
-    call PrintNewLine
     mov al,[plateBuffer+1]
     cmp al,0
     je USInvalid
 USCopyPlate:
-    mov di,OFFSET slotPlateLens
-    add di,bx
     mov al,[plateBuffer+1]
-    mov [di],al
-    mov ax,bx
+    mov [slotPlateLens+di],al
+    mov ax,di
     mov si,MAX_PLATE_LEN
     mul si
     mov di,OFFSET slotPlates
     add di,ax
     mov dx,OFFSET plateBuffer
     call CopyBufferToDest
+
 USUpdateDone:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET updateOkMsg
     call ShowMsgAndPause
     jmp USDone
 
 USInvalid:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET invalidInputMsg
     call ShowMsgAndPause
     jmp USStart
 USNotFound:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET notFoundMsg
     call ShowMsgAndPause
 USDone:
+    pop bp
     pop di
     pop si
     pop dx
@@ -1514,110 +1878,141 @@ DeleteSlot PROC
     push dx
     push si
     push di
+    push bp
 DSStart:
-    call ClearScreen
-    mov dx,OFFSET deleteHeader
-    call PrintDollarString
-    call PrintNewLine
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,3
+    mov si,OFFSET uiDeleteTitle
+    call PrintCenteredDollarStringAttr
 
-    mov dx,OFFSET slotIdPrompt
-    call PrintDollarString
+    call FlushKeyboard
+    mov bl,UI_ATTR_PROMPT
+    mov dh,7
+    mov dl,6
+    mov si,OFFSET slotIdPrompt
+    call PrintAtDollarStringAttr
     mov dx,OFFSET slotIdBuffer
     call ReadLine
-    call PrintNewLine
     mov dx,OFFSET slotIdBuffer
     call ParseNumber
     jnc DSIdOk
     jmp DSInvalid
 DSIdOk:
-
     call FindSlotById
     jnc DSFound
     jmp DSNotFound
 DSFound:
-    mov bh,0                 ; BX = index
-    mov al,[slotStatus+bx]
+    xor bh,bh
+    mov di,bx
+    mov al,[slotStatus+di]
     cmp al,STATUS_DELETED
     jne DSFoundOk
     jmp DSNotFound
 DSFoundOk:
-
-    ; show record details
-    mov dx,OFFSET slotIdLabel
-    call PrintDollarString
-    mov ax,bx
+    ; Slot ID
+    mov bl,UI_ATTR_NORMAL
+    mov dh,9
+    mov dl,6
+    mov si,OFFSET slotIdLabel
+    call PrintAtDollarStringAttr
+    mov ax,di
     shl ax,1
-    mov di,OFFSET slotIds
-    add di,ax
-    mov ax,[di]
+    mov si,OFFSET slotIds
+    add si,ax
+    mov ax,[si]
     call PrintNumber
-    call PrintNewLine
 
-    mov dx,OFFSET statusLabel
-    call PrintDollarString
-    mov al,[slotStatus+bx]
+    ; Status
+    mov bl,UI_ATTR_NORMAL
+    mov dh,10
+    mov dl,6
+    mov si,OFFSET statusLabel
+    call PrintAtDollarStringAttr
+    mov al,[slotStatus+di]
     call PrintStatusText
-    call PrintNewLine
 
-    mov dx,OFFSET plateLabel
-    call PrintDollarString
-    mov dl,[slotPlateLens+bx]
-    cmp dl,0
+    ; Plate
+    mov bl,UI_ATTR_NORMAL
+    mov dh,11
+    mov dl,6
+    mov si,OFFSET plateLabel
+    call PrintAtDollarStringAttr
+    mov al,[slotStatus+di]
+    cmp al,STATUS_OCCUPIED
+    jne DSDash
+    mov al,[slotPlateLens+di]
+    cmp al,0
     je DSDash
-    mov ax,bx
+    mov ax,di
     mov si,MAX_PLATE_LEN
     mul si
-    mov di,OFFSET slotPlates
-    add di,ax
-    mov cl,[slotPlateLens+bx]
+    mov si,OFFSET slotPlates
+    add si,ax
+    push cx
+    mov cl,[slotPlateLens+di]
     mov ch,0
-    mov si,di
-DSPlateLoop:
-    cmp cx,0
-    je DSAfterPlate
-    mov dl,[si]
-    mov ah,02h
-    int 21h
-    inc si
-    loop DSPlateLoop
-DSAfterPlate:
+    mov bl,UI_ATTR_NORMAL
+    call WriteBufAttrAtCursor
+    pop cx
     jmp DSAfterPlateShow
 DSDash:
     mov dx,OFFSET dashMsg
     call PrintZeroString
 DSAfterPlateShow:
-    call PrintNewLine
-    call PrintNewLine
 
-    mov dx,OFFSET deleteConfirm
-    call PrintDollarString
-    mov ah,01h
+    mov bl,UI_ATTR_PROMPT
+    mov dh,14
+    mov dl,6
+    mov si,OFFSET deleteConfirm
+    call PrintAtDollarStringAttr
+
+    call FlushKeyboard
+    mov ah,08h
     int 21h
-    call PrintNewLine
-    mov ah,al
+    mov [digitBuffer],al
+    mov si,OFFSET digitBuffer
+    mov cx,1
+    mov bl,UI_ATTR_PROMPT
+    call WriteBufAttrAtCursor
+
     call ToUpper
     cmp al,'Y'
     je DSDoDelete
-    mov dx,OFFSET continueMsg
-    call ShowMsgAndPause
+
+    mov bl,UI_ATTR_PROMPT
+    mov dh,18
+    mov dl,6
+    mov si,OFFSET uiDeleteCancelled
+    call PrintAtDollarStringAttr
+    call FlushKeyboard
+    call WaitForKey
     jmp DSDone
 
 DSDoDelete:
-    mov di,OFFSET slotStatus
-    add di,bx
-    mov byte ptr [di],STATUS_DELETED
+    mov byte ptr [slotStatus+di],STATUS_DELETED
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET deleteOkMsg
     call ShowMsgAndPause
     jmp DSDone
 
 DSInvalid:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET invalidInputMsg
     call ShowMsgAndPause
     jmp DSStart
 DSNotFound:
+    mov dh,18
+    mov dl,6
+    call SetCursorPos
     mov dx,OFFSET notFoundMsg
     call ShowMsgAndPause
 DSDone:
+    pop bp
     pop di
     pop si
     pop dx
@@ -1725,9 +2120,16 @@ MMExit:
 MainMenu ENDP
 
 ExitProgram PROC
-    call ClearScreen
-    mov dx,OFFSET exitMsg
-    call PrintDollarString
+    call UiPrepareScreen
+    mov bl,UI_ATTR_TITLE
+    mov dh,5
+    mov si,OFFSET uiExitTitle
+    call PrintCenteredDollarStringAttr
+
+    mov bl,UI_ATTR_NORMAL
+    mov dh,12
+    mov si,OFFSET exitMsg
+    call PrintCenteredDollarStringAttr
     mov ax,4C00h
     int 21h
 ExitProgram ENDP
